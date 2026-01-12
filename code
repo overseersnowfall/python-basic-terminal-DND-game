@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 
 @dataclass
 class Stats:
+    """Character statistics"""
     hp: int
     max_hp: int
     mp: int
@@ -15,6 +16,59 @@ class Stats:
     speed: int
     level: int = 1
     exp: int = 0
+    
+    # Active status effects (buffs/debuffs)
+    attack_modifier: int = 0  # Temporary attack change
+    speed_modifier: int = 0   # Temporary speed change
+    attack_modifier_turns: int = 0  # Turns remaining for attack modifier
+    speed_modifier_turns: int = 0   # Turns remaining for speed modifier
+    
+    def get_effective_attack(self) -> int:
+        """Get attack with modifiers applied"""
+        return max(1, self.attack + self.attack_modifier)
+    
+    def get_effective_speed(self) -> int:
+        """Get speed with modifiers applied"""
+        return max(1, self.speed + self.speed_modifier)
+    
+    def apply_attack_modifier(self, amount: int, duration: int):
+        """Apply temporary attack change"""
+        self.attack_modifier += amount
+        self.attack_modifier_turns = max(self.attack_modifier_turns, duration)
+    
+    def apply_speed_modifier(self, amount: int, duration: int):
+        """Apply temporary speed change"""
+        self.speed_modifier += amount
+        self.speed_modifier_turns = max(self.speed_modifier_turns, duration)
+    
+    def tick_status_effects(self):
+        """Reduce duration of status effects by 1 turn"""
+        # Attack modifier
+        if self.attack_modifier_turns > 0:
+            self.attack_modifier_turns -= 1
+            if self.attack_modifier_turns == 0:
+                self.attack_modifier = 0
+        
+        # Speed modifier
+        if self.speed_modifier_turns > 0:
+            self.speed_modifier_turns -= 1
+            if self.speed_modifier_turns == 0:
+                self.speed_modifier = 0
+    
+    def has_active_effects(self) -> bool:
+        """Check if any status effects are active"""
+        return self.attack_modifier_turns > 0 or self.speed_modifier_turns > 0
+    
+    def get_status_effects_text(self) -> str:
+        """Get text description of active effects"""
+        effects = []
+        if self.attack_modifier_turns > 0:
+            sign = "+" if self.attack_modifier > 0 else ""
+            effects.append(f"ATK {sign}{self.attack_modifier} ({self.attack_modifier_turns} turns)")
+        if self.speed_modifier_turns > 0:
+            sign = "+" if self.speed_modifier > 0 else ""
+            effects.append(f"SPD {sign}{self.speed_modifier} ({self.speed_modifier_turns} turns)")
+        return ", ".join(effects) if effects else "None"
     
     def take_damage(self, damage: int) -> int:
         actual_damage = max(1, damage)
@@ -58,30 +112,20 @@ class Skill:
     duration: int = 0  # How many turns buff/debuff lasts (0 = instant)
 
 class Entity:
-    # Common features ALL characters share
-    """Base class for all characters (players and enemies)"""
+    """Base class for all game characters"""
     
     def __init__(self, name: str, stats: Stats, ascii_art: str = ""):
         self.name = name
         self.stats = stats
         self.ascii_art = ascii_art
     
-    def basic_attack(self, target: 'Entity') -> tuple[int, str]:
-        """
-        Attack another entity
-        Returns: (damage_dealt, message)
-        """
-        # Calculate damage with some randomness (80% to 120%)
-        base_damage = self.stats.attack
-        random_multiplier = random.uniform(0.8, 1.2)
-        damage = int(base_damage * random_multiplier)
-        
-        # Apply damage to target
+    def basic_attack(self, target: 'Entity') -> Tuple[int, str]:
+        """Attack another entity using effective attack (with buffs/debuffs)"""
+        # Use effective attack (includes buffs/debuffs)
+        effective_attack = self.stats.get_effective_attack()
+        damage = int(effective_attack * random.uniform(0.8, 1.2))
         actual_damage = target.stats.take_damage(damage)
-        
-        # Create message
         message = f"{self.name} attacks {target.name} for {actual_damage} damage!"
-        
         return actual_damage, message
 
 class Player(Entity, ABC):
@@ -141,68 +185,196 @@ class Player(Entity, ABC):
         if not self.stats.use_mp(skill.mp_cost):
             return None, f"Not enough MP! Need {skill.mp_cost} MP."
         
+        # Calculate effect based on attacker's stats
+        effect_amount = int(self.stats.attack * skill.power)
+        
         # Handle different skill types
         if skill.skill_type == "damage":
-            # Damage skill
-            base_damage = self.stats.attack * skill.damage_multiplier
-            damage = int(base_damage * random.uniform(0.9, 1.1))
+            # Damage skill - use target's effective attack for their future attacks
+            damage = int(effect_amount * random.uniform(0.9, 1.1))
             actual_damage = target.stats.take_damage(damage)
             message = f"{self.name} uses {skill.name}! Deals {actual_damage} damage!"
             return actual_damage, message
         
         elif skill.skill_type == "heal":
-            # Healing skill (heals self)
-            self.stats.heal(skill.effect_value)
-            message = f"{self.name} uses {skill.name}! Restored {skill.effect_value} HP!"
+            # Healing skill (heals self or ally)
+            # Target is usually self, but could heal others
+            heal_amount = effect_amount
+            target.stats.heal(heal_amount)
+            message = f"{self.name} uses {skill.name}! Restored {heal_amount} HP to {target.name}!"
             return 0, message
         
         elif skill.skill_type == "buff":
-            # Buff skill (increase own stats temporarily)
-            # For now, just show message - you'll implement buff system later
-            message = f"{self.name} uses {skill.name}! Attack increased!"
+            # Buff skill - increase target's stats temporarily
+            # For now, buff attack (you can add more stat types later)
+            buff_amount = max(1, effect_amount)  # At least +1
+            target.stats.apply_attack_modifier(buff_amount, skill.duration)
+            message = f"{self.name} uses {skill.name} on {target.name}! Attack +{buff_amount} for {skill.duration} turns!"
             return 0, message
         
         elif skill.skill_type == "debuff":
-            # Debuff skill (decrease enemy stats temporarily)
-            # For now, just show message - you'll implement debuff system later
-            message = f"{self.name} uses {skill.name} on {target.name}! Attack decreased!"
+            # Debuff skill - decrease enemy stats temporarily
+            debuff_amount = max(1, effect_amount)  # At least -1
+            target.stats.apply_attack_modifier(-debuff_amount, skill.duration)
+            message = f"{self.name} uses {skill.name} on {target.name}! Attack -{debuff_amount} for {skill.duration} turns!"
             return 0, message
         
         else:
-            # Unknown skill type
             return None, f"Unknown skill type: {skill.skill_type}"
 
 class Warrior(Player):
     """Warrior - High HP, powerful physical attacks"""
     
     def __init__(self, name: str):
-        # Define warrior stats
         stats = Stats(
             hp=120, max_hp=120,
             mp=30, max_mp=30,
             attack=18,
             speed=8
         )
-        
-        # Call Player constructor
         super().__init__(name, stats, "Warrior")
     
     def _init_skills(self):
-        """Warrior gets physical damage skills"""
+        """Warrior gets physical damage skills and buffs"""
         self.skills = [
             Skill(
                 name="Power Strike",
                 description="Heavy attack dealing 150% damage",
                 mp_cost=10,
-                damage_multiplier=1.5
+                skill_type="damage",
+                power=1.5
             ),
             Skill(
                 name="Whirlwind",
                 description="Spinning attack dealing 200% damage",
                 mp_cost=20,
-                damage_multiplier=2.0
+                skill_type="damage",
+                power=2.0
             ),
-            # You can add more warrior skills here later!
+            Skill(
+                name="Battle Cry",
+                description="Boost attack by 30% for 3 turns",
+                mp_cost=15,
+                skill_type="buff",
+                power=0.3,  # 30% of attack
+                duration=3
+            ),
+        ]
+
+class Wizard(Player):
+    """Wizard - High MP, powerful magic attacks"""
+    
+    def __init__(self, name: str):
+        stats = Stats(
+            hp=80, max_hp=80,
+            mp=60, max_mp=60,
+            attack=12,
+            speed=10
+        )
+        super().__init__(name, stats, "Wizard")
+    
+    def _init_skills(self):
+        """Wizard gets elemental magic, healing, and debuffs"""
+        self.skills = [
+            Skill(
+                name="Fireball",
+                description="Fire spell dealing 160% damage",
+                mp_cost=12,
+                skill_type="damage",
+                power=1.6
+            ),
+            Skill(
+                name="Lightning Bolt",
+                description="Electric spell dealing 220% damage",
+                mp_cost=25,
+                skill_type="damage",
+                power=2.2
+            ),
+            Skill(
+                name="Heal",
+                description="Restore HP based on 80% of attack",
+                mp_cost=15,
+                skill_type="heal",
+                power=0.8  # 80% of attack as healing
+            ),
+            Skill(
+                name="Weaken",
+                description="Reduce enemy attack by 40% for 2 turns",
+                mp_cost=18,
+                skill_type="debuff",
+                power=0.4,  # 40% of caster's attack
+                duration=2
+            ),
+        ]
+
+class Ranger(Player):
+    """Ranger - Balanced stats, ranged attacks"""
+    
+    def __init__(self, name: str):
+        stats = Stats(
+            hp=100, max_hp=100,
+            mp=40, max_mp=40,
+            attack=15,
+            speed=12
+        )
+        super().__init__(name, stats, "Ranger")
+    
+    def _init_skills(self):
+        """Ranger gets precision attacks"""
+        self.skills = [
+            Skill(
+                name="Rapid Shot",
+                description="Quick attack dealing 130% damage",
+                mp_cost=8,
+                skill_type="damage",
+                power=1.3
+            ),
+            Skill(
+                name="Piercing Arrow",
+                description="Armor-piercing shot dealing 180% damage",
+                mp_cost=15,
+                skill_type="damage",
+                power=1.8
+            ),
+        ]
+
+class Thief(Player):
+    """Thief - Highest speed, critical strikes"""
+    
+    def __init__(self, name: str):
+        stats = Stats(
+            hp=90, max_hp=90,
+            mp=35, max_mp=35,
+            attack=14,
+            speed=15
+        )
+        super().__init__(name, stats, "Thief")
+    
+    def _init_skills(self):
+        """Thief gets critical strikes and debuffs"""
+        self.skills = [
+            Skill(
+                name="Backstab",
+                description="Critical strike dealing 170% damage",
+                mp_cost=10,
+                skill_type="damage",
+                power=1.7
+            ),
+            Skill(
+                name="Shadow Strike",
+                description="Swift assassination dealing 250% damage",
+                mp_cost=22,
+                skill_type="damage",
+                power=2.5
+            ),
+            Skill(
+                name="Smoke Bomb",
+                description="Reduce enemy attack by 35% for 2 turns",
+                mp_cost=12,
+                skill_type="debuff",
+                power=0.35,
+                duration=2
+            ),
         ]
 
 class Enemy(Entity):
@@ -219,56 +391,76 @@ class Enemy(Entity):
 
 # TEST IT IMMEDIATELY:
 if __name__ == "__main__":
-    print("=== TESTING ENTITY CLASS ===\n")
+    print("=== TESTING BUFF/DEBUFF SYSTEM ===\n")
     
-    # Create stats for two characters
-    hero_stats = Stats(
-        hp=100, max_hp=100,
-        mp=50, max_mp=50,
-        attack=15,
-        speed=10
-    )
+    # Create warrior and wizard
+    warrior = Warrior("Conan")
+    wizard = Wizard("Gandalf")
     
-    goblin_stats = Stats(
-        hp=30, max_hp=30,
-        mp=10, max_mp=10,
-        attack=8,
-        speed=6
-    )
+    # Create enemy
+    goblin_stats = Stats(hp=100, max_hp=100, mp=10, max_mp=10, 
+                        attack=10, speed=6)
+    goblin = Enemy("Goblin", goblin_stats, "", 25, 10)
     
-    # Create two entities
-    hero = Entity("Hero", hero_stats)
-    goblin = Entity("Goblin", goblin_stats)
-    
-    print(f"Created: {hero.name} (HP: {hero.stats.hp}, ATK: {hero.stats.attack})")
-    print(f"Created: {goblin.name} (HP: {goblin.stats.hp}, ATK: {goblin.stats.attack})")
+    print("=== INITIAL STATS ===")
+    print(f"Warrior Attack: {warrior.stats.attack} (Effective: {warrior.stats.get_effective_attack()})")
+    print(f"Goblin Attack: {goblin.stats.attack} (Effective: {goblin.stats.get_effective_attack()})")
     print()
     
-    # Test attack
-    print("--- Hero attacks Goblin ---")
-    damage, message = hero.basic_attack(goblin)
-    print(message)
+    # Test buff
+    print("=== WARRIOR USES BATTLE CRY (BUFF) ===")
+    battle_cry = warrior.skills[2]  # Battle Cry
+    damage, msg = warrior.use_skill(battle_cry, warrior)  # Buff self
+    print(msg)
+    print(f"Warrior Attack: {warrior.stats.attack} (Effective: {warrior.stats.get_effective_attack()})")
+    print(f"Status Effects: {warrior.stats.get_status_effects_text()}")
+    print()
+    
+    # Test buffed attack
+    print("=== WARRIOR ATTACKS WITH BUFF ===")
+    damage, msg = warrior.basic_attack(goblin)
+    print(msg)
     print(f"Goblin HP: {goblin.stats.hp}/{goblin.stats.max_hp}")
     print()
     
-    # Test counter-attack
-    print("--- Goblin attacks Hero ---")
-    damage, message = goblin.basic_attack(hero)
-    print(message)
-    print(f"Hero HP: {hero.stats.hp}/{hero.stats.max_hp}")
+    # Test debuff
+    print("=== WIZARD USES WEAKEN (DEBUFF) ===")
+    weaken = wizard.skills[3]  # Weaken
+    damage, msg = wizard.use_skill(weaken, goblin)
+    print(msg)
+    print(f"Goblin Attack: {goblin.stats.attack} (Effective: {goblin.stats.get_effective_attack()})")
+    print(f"Status Effects: {goblin.stats.get_status_effects_text()}")
     print()
     
-    # Test multiple attacks until goblin dies
-    print("--- Hero attacks until Goblin is defeated ---")
-    attack_count = 0
-    while goblin.stats.is_alive():
-        attack_count += 1
-        damage, message = hero.basic_attack(goblin)
-        print(f"Attack {attack_count}: {message}")
-        print(f"  Goblin HP: {goblin.stats.hp}/{goblin.stats.max_hp}")
-    
+    # Test debuffed attack
+    print("=== GOBLIN ATTACKS WITH DEBUFF ===")
+    damage, msg = goblin.basic_attack(warrior)
+    print(msg)
+    print(f"Warrior HP: {warrior.stats.hp}/{warrior.stats.max_hp}")
     print()
-    print(f"Goblin defeated after {attack_count} attacks!")
-    print(f"Is goblin alive? {goblin.stats.is_alive()}")
     
-    print("\n✓ Entity class working!")
+    # Simulate turns passing
+    print("=== TURN 1 ENDS - STATUS EFFECTS TICK ===")
+    warrior.stats.tick_status_effects()
+    goblin.stats.tick_status_effects()
+    print(f"Warrior Status: {warrior.stats.get_status_effects_text()}")
+    print(f"Goblin Status: {goblin.stats.get_status_effects_text()}")
+    print()
+    
+    print("=== TURN 2 ENDS - STATUS EFFECTS TICK ===")
+    warrior.stats.tick_status_effects()
+    goblin.stats.tick_status_effects()
+    print(f"Warrior Status: {warrior.stats.get_status_effects_text()}")
+    print(f"Goblin Status: {goblin.stats.get_status_effects_text()}")
+    print()
+    
+    print("=== TURN 3 ENDS - STATUS EFFECTS TICK ===")
+    warrior.stats.tick_status_effects()
+    goblin.stats.tick_status_effects()
+    print(f"Warrior Status: {warrior.stats.get_status_effects_text()}")
+    print(f"Goblin Status: {goblin.stats.get_status_effects_text()}")
+    print(f"Warrior Attack: {warrior.stats.attack} (Effective: {warrior.stats.get_effective_attack()})")
+    print(f"Goblin Attack: {goblin.stats.attack} (Effective: {goblin.stats.get_effective_attack()})")
+    print()
+    
+    print("✓ Buff/Debuff system working!")
