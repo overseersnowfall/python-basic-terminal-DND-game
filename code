@@ -1,0 +1,274 @@
+import os
+import time
+import random
+from typing import Optional, List, Dict, Tuple
+from dataclasses import dataclass
+from abc import ABC, abstractmethod
+
+@dataclass
+class Stats:
+    hp: int
+    max_hp: int
+    mp: int
+    max_mp: int
+    attack: int
+    speed: int
+    level: int = 1
+    exp: int = 0
+    
+    def take_damage(self, damage: int) -> int:
+        actual_damage = max(1, damage)
+        self.hp = max(0, self.hp - actual_damage)
+        return actual_damage
+    
+    def heal(self, amount: int) -> int:
+        actual_heal = max(1, amount)
+        self.hp = min(self.max_hp, self.hp + amount)
+        return actual_heal
+
+    def is_alive(self) -> bool:
+        return self.hp > 0
+    
+    def use_mp(self, amount: int) -> bool:
+        """
+        Try to use MP. Returns True if successful, False if not enough MP.
+        """
+        if self.mp >= amount:
+            self.mp -= amount
+            return True
+        return False
+    
+    def restore_mp(self, amount: int):
+        """Restore MP, not exceeding max"""
+        self.mp = min(self.max_mp, self.mp + amount)
+
+@dataclass
+class Skill:
+    """A skill/spell that costs MP to use"""
+    name: str
+    description: str
+    mp_cost: int
+    skill_type: str  # "damage", "heal", "buff", "debuff"
+    power: float = 0.0  # Multiplier for ALL skill types
+    # Examples:
+    # damage: 1.5 = deals 150% of attack as damage
+    # heal: 0.5 = heals 50% of attack
+    # buff: 0.2 = increases target's attack by 20% of caster's attack
+    # debuff: 0.3 = decreases target's attack by 30% of caster's attack
+    duration: int = 0  # How many turns buff/debuff lasts (0 = instant)
+
+class Entity:
+    # Common features ALL characters share
+    """Base class for all characters (players and enemies)"""
+    
+    def __init__(self, name: str, stats: Stats, ascii_art: str = ""):
+        self.name = name
+        self.stats = stats
+        self.ascii_art = ascii_art
+    
+    def basic_attack(self, target: 'Entity') -> tuple[int, str]:
+        """
+        Attack another entity
+        Returns: (damage_dealt, message)
+        """
+        # Calculate damage with some randomness (80% to 120%)
+        base_damage = self.stats.attack
+        random_multiplier = random.uniform(0.8, 1.2)
+        damage = int(base_damage * random_multiplier)
+        
+        # Apply damage to target
+        actual_damage = target.stats.take_damage(damage)
+        
+        # Create message
+        message = f"{self.name} attacks {target.name} for {actual_damage} damage!"
+        
+        return actual_damage, message
+
+class Player(Entity, ABC):
+    """
+    Base Player class - must be subclassed (Warrior, Wizard, etc.)
+    ABC = Abstract Base Class
+    """
+    
+    def __init__(self, name: str, stats: Stats, class_name: str, ascii_art: str = ""):
+        # Call Entity constructor
+        super().__init__(name, stats, ascii_art)
+        
+        # Add player-specific attributes
+        self.class_name = class_name
+        self.inventory: List = []  # Empty list for items
+        self.skills: List = []     # Empty list for skills
+        self.gold: int = 0
+        
+        # Each subclass will define their own skills
+        self._init_skills()
+    
+    @abstractmethod
+    def _init_skills(self):
+        """
+        Each player class (Warrior, Wizard, etc.) must implement this
+        This is where they add their unique skills
+        """
+        pass
+    
+    def gain_exp(self, exp: int):
+        """Gain experience points"""
+        self.stats.exp += exp
+        exp_needed = self.stats.level * 100
+        
+        # Level up if enough exp
+        if self.stats.exp >= exp_needed:
+            self.level_up()
+    
+    def level_up(self):
+        """Increase level and stats"""
+        self.stats.level += 1
+        self.stats.max_hp += int(self.stats.max_hp * 0.1)  # Increase max HP by 10%
+        self.stats.max_mp += int(self.stats.max_mp * 0.1)  # Increase max MP by 10%
+        self.stats.hp = self.stats.max_hp  # Full heal on level up
+        self.stats.mp = self.stats.max_mp
+        self.stats.attack += int(self.stats.attack * 0.1)  # Increase attack by 10%
+        self.stats.speed += 1
+        
+        print(f"🎉 LEVEL UP! {self.name} is now level {self.stats.level}!")
+
+    def use_skill(self, skill: Skill, target: Entity) -> Tuple[Optional[int], str]:
+        """
+        Use a skill on a target
+        Returns: (damage_dealt, message) or (None, error_message)
+        """
+        # Check if player has enough MP
+        if not self.stats.use_mp(skill.mp_cost):
+            return None, f"Not enough MP! Need {skill.mp_cost} MP."
+        
+        # Handle different skill types
+        if skill.skill_type == "damage":
+            # Damage skill
+            base_damage = self.stats.attack * skill.damage_multiplier
+            damage = int(base_damage * random.uniform(0.9, 1.1))
+            actual_damage = target.stats.take_damage(damage)
+            message = f"{self.name} uses {skill.name}! Deals {actual_damage} damage!"
+            return actual_damage, message
+        
+        elif skill.skill_type == "heal":
+            # Healing skill (heals self)
+            self.stats.heal(skill.effect_value)
+            message = f"{self.name} uses {skill.name}! Restored {skill.effect_value} HP!"
+            return 0, message
+        
+        elif skill.skill_type == "buff":
+            # Buff skill (increase own stats temporarily)
+            # For now, just show message - you'll implement buff system later
+            message = f"{self.name} uses {skill.name}! Attack increased!"
+            return 0, message
+        
+        elif skill.skill_type == "debuff":
+            # Debuff skill (decrease enemy stats temporarily)
+            # For now, just show message - you'll implement debuff system later
+            message = f"{self.name} uses {skill.name} on {target.name}! Attack decreased!"
+            return 0, message
+        
+        else:
+            # Unknown skill type
+            return None, f"Unknown skill type: {skill.skill_type}"
+
+class Warrior(Player):
+    """Warrior - High HP, powerful physical attacks"""
+    
+    def __init__(self, name: str):
+        # Define warrior stats
+        stats = Stats(
+            hp=120, max_hp=120,
+            mp=30, max_mp=30,
+            attack=18,
+            speed=8
+        )
+        
+        # Call Player constructor
+        super().__init__(name, stats, "Warrior")
+    
+    def _init_skills(self):
+        """Warrior gets physical damage skills"""
+        self.skills = [
+            Skill(
+                name="Power Strike",
+                description="Heavy attack dealing 150% damage",
+                mp_cost=10,
+                damage_multiplier=1.5
+            ),
+            Skill(
+                name="Whirlwind",
+                description="Spinning attack dealing 200% damage",
+                mp_cost=20,
+                damage_multiplier=2.0
+            ),
+            # You can add more warrior skills here later!
+        ]
+
+class Enemy(Entity):
+    """Enemy character - drops EXP and gold when defeated"""
+    
+    def __init__(self, name: str, stats: Stats, ascii_art: str, 
+                 exp_reward: int, gold_reward: int):
+        # Call parent (Entity) constructor
+        super().__init__(name, stats, ascii_art)
+        
+        # Add enemy-specific attributes
+        self.exp_reward = exp_reward
+        self.gold_reward = gold_reward
+
+# TEST IT IMMEDIATELY:
+if __name__ == "__main__":
+    print("=== TESTING ENTITY CLASS ===\n")
+    
+    # Create stats for two characters
+    hero_stats = Stats(
+        hp=100, max_hp=100,
+        mp=50, max_mp=50,
+        attack=15,
+        speed=10
+    )
+    
+    goblin_stats = Stats(
+        hp=30, max_hp=30,
+        mp=10, max_mp=10,
+        attack=8,
+        speed=6
+    )
+    
+    # Create two entities
+    hero = Entity("Hero", hero_stats)
+    goblin = Entity("Goblin", goblin_stats)
+    
+    print(f"Created: {hero.name} (HP: {hero.stats.hp}, ATK: {hero.stats.attack})")
+    print(f"Created: {goblin.name} (HP: {goblin.stats.hp}, ATK: {goblin.stats.attack})")
+    print()
+    
+    # Test attack
+    print("--- Hero attacks Goblin ---")
+    damage, message = hero.basic_attack(goblin)
+    print(message)
+    print(f"Goblin HP: {goblin.stats.hp}/{goblin.stats.max_hp}")
+    print()
+    
+    # Test counter-attack
+    print("--- Goblin attacks Hero ---")
+    damage, message = goblin.basic_attack(hero)
+    print(message)
+    print(f"Hero HP: {hero.stats.hp}/{hero.stats.max_hp}")
+    print()
+    
+    # Test multiple attacks until goblin dies
+    print("--- Hero attacks until Goblin is defeated ---")
+    attack_count = 0
+    while goblin.stats.is_alive():
+        attack_count += 1
+        damage, message = hero.basic_attack(goblin)
+        print(f"Attack {attack_count}: {message}")
+        print(f"  Goblin HP: {goblin.stats.hp}/{goblin.stats.max_hp}")
+    
+    print()
+    print(f"Goblin defeated after {attack_count} attacks!")
+    print(f"Is goblin alive? {goblin.stats.is_alive()}")
+    
+    print("\n✓ Entity class working!")
