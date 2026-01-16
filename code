@@ -6,6 +6,23 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
 @dataclass
+class StatusEffect:
+    """A temporary status effect (buff/debuff/DOT)"""
+    name: str           # "Poison", "Burn", "Attack Buff", etc.
+    effect_type: str    # "stat_mod", "damage_over_time", "stun", etc.
+    stat_affected: str = ""  # "attack", "speed", etc. (for stat_mod type)
+    power: int = 0      # Amount (+5 attack, -3 speed, 10 poison damage, etc.)
+    duration: int = 0   # Turns remaining
+    
+    def tick(self) -> bool:
+        """
+        Reduce duration by 1 turn.
+        Returns True if effect is still active, False if expired.
+        """
+        self.duration -= 1
+        return self.duration > 0
+
+@dataclass
 class Stats:
     """Character statistics"""
     hp: int
@@ -17,58 +34,94 @@ class Stats:
     level: int = 1
     exp: int = 0
     
-    # Active status effects (buffs/debuffs)
-    attack_modifier: int = 0  # Temporary attack change
-    speed_modifier: int = 0   # Temporary speed change
-    attack_modifier_turns: int = 0  # Turns remaining for attack modifier
-    speed_modifier_turns: int = 0   # Turns remaining for speed modifier
+    # Status effects list - can hold any number of effects!
+    status_effects: List['StatusEffect'] = None
+    
+    def __post_init__(self):
+        """Initialize mutable default (can't do in dataclass directly)"""
+        if self.status_effects is None:
+            self.status_effects = []
+    
+    def add_status_effect(self, effect: StatusEffect):
+        """Add a new status effect"""
+        # Check if same type of effect already exists
+        for existing in self.status_effects:
+            if existing.name == effect.name:
+                # Refresh duration (take the longer one)
+                existing.duration = max(existing.duration, effect.duration)
+                # Stack power (for things like multiple poisons)
+                if effect.effect_type == "damage_over_time":
+                    existing.power += effect.power
+                return
+        
+        # Add new effect
+        self.status_effects.append(effect)
+    
+    def remove_status_effect(self, effect_name: str):
+        """Remove a status effect by name"""
+        self.status_effects = [e for e in self.status_effects if e.name != effect_name]
+    
+    def get_stat_modifier(self, stat_name: str) -> int:
+        """Get total modifier for a stat from all effects"""
+        total = 0
+        for effect in self.status_effects:
+            if effect.effect_type == "stat_mod" and effect.stat_affected == stat_name:
+                total += effect.power
+        return total
     
     def get_effective_attack(self) -> int:
-        """Get attack with modifiers applied"""
-        return max(1, self.attack + self.attack_modifier)
+        """Get attack with all modifiers applied"""
+        return max(1, self.attack + self.get_stat_modifier("attack"))
     
     def get_effective_speed(self) -> int:
-        """Get speed with modifiers applied"""
-        return max(1, self.speed + self.speed_modifier)
+        """Get speed with all modifiers applied"""
+        return max(1, self.speed + self.get_stat_modifier("speed"))
     
-    def apply_attack_modifier(self, amount: int, duration: int):
-        """Apply temporary attack change"""
-        self.attack_modifier += amount
-        self.attack_modifier_turns = max(self.attack_modifier_turns, duration)
+    def is_stunned(self) -> bool:
+        """Check if character is stunned"""
+        return any(e.effect_type == "stun" for e in self.status_effects)
     
-    def apply_speed_modifier(self, amount: int, duration: int):
-        """Apply temporary speed change"""
-        self.speed_modifier += amount
-        self.speed_modifier_turns = max(self.speed_modifier_turns, duration)
-    
-    def tick_status_effects(self):
-        """Reduce duration of status effects by 1 turn"""
-        # Attack modifier
-        if self.attack_modifier_turns > 0:
-            self.attack_modifier_turns -= 1
-            if self.attack_modifier_turns == 0:
-                self.attack_modifier = 0
+    def tick_status_effects(self) -> List[str]:
+        """
+        Process all status effects for one turn.
+        Returns list of messages about what happened.
+        """
+        messages = []
+        effects_to_remove = []
         
-        # Speed modifier
-        if self.speed_modifier_turns > 0:
-            self.speed_modifier_turns -= 1
-            if self.speed_modifier_turns == 0:
-                self.speed_modifier = 0
-    
-    def has_active_effects(self) -> bool:
-        """Check if any status effects are active"""
-        return self.attack_modifier_turns > 0 or self.speed_modifier_turns > 0
+        for effect in self.status_effects:
+            # Handle damage over time (poison, burn, etc.)
+            if effect.effect_type == "damage_over_time":
+                damage = self.take_damage(effect.power)
+                messages.append(f"💀 {effect.name} deals {damage} damage!")
+            
+            # Tick down duration
+            if not effect.tick():
+                effects_to_remove.append(effect.name)
+                messages.append(f"✨ {effect.name} wore off!")
+        
+        # Remove expired effects
+        for name in effects_to_remove:
+            self.remove_status_effect(name)
+        
+        return messages
     
     def get_status_effects_text(self) -> str:
-        """Get text description of active effects"""
-        effects = []
-        if self.attack_modifier_turns > 0:
-            sign = "+" if self.attack_modifier > 0 else ""
-            effects.append(f"ATK {sign}{self.attack_modifier} ({self.attack_modifier_turns} turns)")
-        if self.speed_modifier_turns > 0:
-            sign = "+" if self.speed_modifier > 0 else ""
-            effects.append(f"SPD {sign}{self.speed_modifier} ({self.speed_modifier_turns} turns)")
-        return ", ".join(effects) if effects else "None"
+        """Get text description of all active effects"""
+        if not self.status_effects:
+            return "None"
+        
+        effect_strings = []
+        for effect in self.status_effects:
+            if effect.effect_type == "stat_mod":
+                sign = "+" if effect.power > 0 else ""
+                effect_strings.append(f"{effect.name} {sign}{effect.power} ({effect.duration}t)")
+            elif effect.effect_type == "damage_over_time":
+                effect_strings.append(f"{effect.name} {effect.power}/turn ({effect.duration}t)")
+            elif effect.effect_type == "stun":
+                effect_strings.append(f"{effect.name} ({effect.duration}t)")
+        
+        return ", ".join(effect_strings)
     
     def take_damage(self, damage: int) -> int:
         actual_damage = max(1, damage)
@@ -102,14 +155,10 @@ class Skill:
     name: str
     description: str
     mp_cost: int
-    skill_type: str  # "damage", "heal", "buff", "debuff"
-    power: float = 0.0  # Multiplier for ALL skill types
-    # Examples:
-    # damage: 1.5 = deals 150% of attack as damage
-    # heal: 0.5 = heals 50% of attack
-    # buff: 0.2 = increases target's attack by 20% of caster's attack
-    # debuff: 0.3 = decreases target's attack by 30% of caster's attack
-    duration: int = 0  # How many turns buff/debuff lasts (0 = instant)
+    skill_type: str  # "damage", "heal", "buff", "debuff", "dot" (damage over time)
+    power: float = 0.0
+    duration: int = 0
+    status_effect: Optional[str] = None  # "poison", "burn", "stun", etc.
 
 class Entity:
     """Base class for all game characters"""
@@ -177,46 +226,77 @@ class Player(Entity, ABC):
         print(f"🎉 LEVEL UP! {self.name} is now level {self.stats.level}!")
 
     def use_skill(self, skill: Skill, target: Entity) -> Tuple[Optional[int], str]:
-        """
-        Use a skill on a target
-        Returns: (damage_dealt, message) or (None, error_message)
-        """
-        # Check if player has enough MP
+        """Use a skill on a target"""
+        # Check MP
         if not self.stats.use_mp(skill.mp_cost):
             return None, f"Not enough MP! Need {skill.mp_cost} MP."
         
-        # Calculate effect based on attacker's stats
         effect_amount = int(self.stats.attack * skill.power)
         
-        # Handle different skill types
         if skill.skill_type == "damage":
-            # Damage skill - use target's effective attack for their future attacks
+            # Direct damage
             damage = int(effect_amount * random.uniform(0.9, 1.1))
             actual_damage = target.stats.take_damage(damage)
             message = f"{self.name} uses {skill.name}! Deals {actual_damage} damage!"
             return actual_damage, message
         
         elif skill.skill_type == "heal":
-            # Healing skill (heals self or ally)
-            # Target is usually self, but could heal others
+            # Healing
             heal_amount = effect_amount
             target.stats.heal(heal_amount)
-            message = f"{self.name} uses {skill.name}! Restored {heal_amount} HP to {target.name}!"
+            message = f"{self.name} uses {skill.name}! Restored {heal_amount} HP!"
             return 0, message
         
         elif skill.skill_type == "buff":
-            # Buff skill - increase target's stats temporarily
-            # For now, buff attack (you can add more stat types later)
-            buff_amount = max(1, effect_amount)  # At least +1
-            target.stats.apply_attack_modifier(buff_amount, skill.duration)
-            message = f"{self.name} uses {skill.name} on {target.name}! Attack +{buff_amount} for {skill.duration} turns!"
+            # Buff - increase target's stats
+            buff_amount = max(1, effect_amount)
+            effect = StatusEffect(
+                name=f"{skill.name}",
+                effect_type="stat_mod",
+                stat_affected="attack",  # For now, all buffs affect attack
+                power=buff_amount,
+                duration=skill.duration
+            )
+            target.stats.add_status_effect(effect)
+            message = f"{self.name} uses {skill.name}! {target.name}'s attack +{buff_amount} for {skill.duration} turns!"
             return 0, message
         
         elif skill.skill_type == "debuff":
-            # Debuff skill - decrease enemy stats temporarily
-            debuff_amount = max(1, effect_amount)  # At least -1
-            target.stats.apply_attack_modifier(-debuff_amount, skill.duration)
-            message = f"{self.name} uses {skill.name} on {target.name}! Attack -{debuff_amount} for {skill.duration} turns!"
+            # Debuff - decrease target's stats
+            debuff_amount = max(1, effect_amount)
+            effect = StatusEffect(
+                name=f"{skill.name}",
+                effect_type="stat_mod",
+                stat_affected="attack",
+                power=-debuff_amount,
+                duration=skill.duration
+            )
+            target.stats.add_status_effect(effect)
+            message = f"{self.name} uses {skill.name}! {target.name}'s attack -{debuff_amount} for {skill.duration} turns!"
+            return 0, message
+        
+        elif skill.skill_type == "dot":
+            # Damage over time (poison, burn, bleed, etc.)
+            dot_damage = max(1, effect_amount)
+            effect = StatusEffect(
+                name=skill.status_effect or skill.name,  # Use custom name or skill name
+                effect_type="damage_over_time",
+                power=dot_damage,
+                duration=skill.duration
+            )
+            target.stats.add_status_effect(effect)
+            message = f"{self.name} uses {skill.name}! {target.name} is afflicted with {effect.name}!"
+            return 0, message
+        
+        elif skill.skill_type == "stun":
+            # Stun effect
+            effect = StatusEffect(
+                name="Stunned",
+                effect_type="stun",
+                duration=skill.duration
+            )
+            target.stats.add_status_effect(effect)
+            message = f"{self.name} uses {skill.name}! {target.name} is stunned for {skill.duration} turns!"
             return 0, message
         
         else:
@@ -274,7 +354,7 @@ class Wizard(Player):
         super().__init__(name, stats, "Wizard")
     
     def _init_skills(self):
-        """Wizard gets elemental magic, healing, and debuffs"""
+        """Wizard gets various magic types"""
         self.skills = [
             Skill(
                 name="Fireball",
@@ -284,26 +364,70 @@ class Wizard(Player):
                 power=1.6
             ),
             Skill(
-                name="Lightning Bolt",
-                description="Electric spell dealing 220% damage",
-                mp_cost=25,
-                skill_type="damage",
-                power=2.2
+                name="Poison Cloud",
+                description="Poison enemy for 50% attack/turn for 3 turns",
+                mp_cost=15,
+                skill_type="dot",
+                power=0.5,  # 50% of attack per turn
+                duration=3,
+                status_effect="Poison"
+            ),
+            Skill(
+                name="Flame Curse",
+                description="Burn enemy for 40% attack/turn for 4 turns",
+                mp_cost=18,
+                skill_type="dot",
+                power=0.4,
+                duration=4,
+                status_effect="Burn"
             ),
             Skill(
                 name="Heal",
                 description="Restore HP based on 80% of attack",
                 mp_cost=15,
                 skill_type="heal",
-                power=0.8  # 80% of attack as healing
+                power=0.8
+            ),
+        ]
+
+
+class Thief(Player):
+    """Thief - Status effects and crits"""
+    
+    def __init__(self, name: str):
+        stats = Stats(
+            hp=90, max_hp=90,
+            mp=35, max_mp=35,
+            attack=14,
+            speed=15
+        )
+        super().__init__(name, stats, "Thief")
+    
+    def _init_skills(self):
+        """Thief gets bleed and stun effects"""
+        self.skills = [
+            Skill(
+                name="Backstab",
+                description="Critical strike dealing 170% damage",
+                mp_cost=10,
+                skill_type="damage",
+                power=1.7
             ),
             Skill(
-                name="Weaken",
-                description="Reduce enemy attack by 40% for 2 turns",
-                mp_cost=18,
-                skill_type="debuff",
-                power=0.4,  # 40% of caster's attack
-                duration=2
+                name="Poison Blade",
+                description="Attack that poisons for 60% attack/turn for 3 turns",
+                mp_cost=12,
+                skill_type="dot",
+                power=0.6,
+                duration=3,
+                status_effect="Poison"
+            ),
+            Skill(
+                name="Stunning Strike",
+                description="Stun enemy for 1 turn",
+                mp_cost=15,
+                skill_type="stun",
+                duration=1
             ),
         ]
 
@@ -335,45 +459,6 @@ class Ranger(Player):
                 mp_cost=15,
                 skill_type="damage",
                 power=1.8
-            ),
-        ]
-
-class Thief(Player):
-    """Thief - Highest speed, critical strikes"""
-    
-    def __init__(self, name: str):
-        stats = Stats(
-            hp=90, max_hp=90,
-            mp=35, max_mp=35,
-            attack=14,
-            speed=15
-        )
-        super().__init__(name, stats, "Thief")
-    
-    def _init_skills(self):
-        """Thief gets critical strikes and debuffs"""
-        self.skills = [
-            Skill(
-                name="Backstab",
-                description="Critical strike dealing 170% damage",
-                mp_cost=10,
-                skill_type="damage",
-                power=1.7
-            ),
-            Skill(
-                name="Shadow Strike",
-                description="Swift assassination dealing 250% damage",
-                mp_cost=22,
-                skill_type="damage",
-                power=2.5
-            ),
-            Skill(
-                name="Smoke Bomb",
-                description="Reduce enemy attack by 35% for 2 turns",
-                mp_cost=12,
-                skill_type="debuff",
-                power=0.35,
-                duration=2
             ),
         ]
 
