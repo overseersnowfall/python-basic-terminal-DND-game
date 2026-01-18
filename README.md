@@ -1,6 +1,35 @@
-# Dungeon Quest: ASCII Adventure
+# ASCII DnD (Python)
 
-A text-based RPG game with turn-based combat, multiple character classes, and ASCII art visuals.
+A terminal-based, first-person, ASCII-style RPG inspired by classic Dungeons & Dragons games.  
+The game is played entirely in the terminal and focuses on turn-based combat, player classes, skills, and text-based storytelling.
+
+---
+
+## Purpose of This Project
+
+This project was created as a **learning-focused game development exercise** to improve my understanding of **Object-Oriented Programming (OOP) in Python** and general software architecture. While the project will require additional refinement and features to be considered a complete game, it has successfully met its learning objectives. I may revisit and expand it in the future as I gain more experience.
+
+The project intentionally relies on **core Python features only**, allowing me to focus on:
+
+- Designing clean class hierarchies
+- Separating game logic from rendering
+- Managing game state
+- Writing reusable and extensible code
+
+---
+
+## Learning Goals
+
+The main goals of this project are to:
+
+- Strengthen OOP fundamentals (classes, inheritance, composition)
+- Practice designing systems such as:
+  - Game loops
+  - Combat systems
+  - Player classes and skills
+  - Stats and resource management (HP, MP)
+- Learn how to structure a larger Python project
+- Improve code readability and maintainability
 
 ## 🎮 How to Run
 
